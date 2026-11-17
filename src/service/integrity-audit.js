@@ -16,6 +16,17 @@ export class IntegrityAuditService {
       FROM feeds f LEFT JOIN captures c ON c.capture_id=(
         SELECT capture_id FROM captures WHERE feed_id=f.feed_id AND accepted=1 ORDER BY capture_id DESC LIMIT 1
       ) WHERE (f.last_accepted_at IS NOT c.captured_at) OR (f.last_item_count != COALESCE(c.normalized_count, 0))`);
+    // 归并层检查 1：每个活跃 story 至少要有一个未撤销成员，且成员不能指向已解散 story。
+    this.storyMembershipMismatches = database.prepare(`SELECT s.story_id, s.status,
+      COUNT(m.membership_id) AS active_members FROM stories s
+      LEFT JOIN story_memberships m ON m.story_id=s.story_id AND m.left_at IS NULL
+      GROUP BY s.story_id HAVING (s.status='active' AND active_members=0)
+        OR (s.status='dissolved' AND active_members>0)`);
+    // 归并层检查 2：story 修订号必须等于其 append-only 事件流的最大修订号。
+    this.storyRevisionMismatches = database.prepare(`SELECT s.story_id, s.revision AS stored_revision,
+      COALESCE(e.max_revision, 0) AS event_revision FROM stories s LEFT JOIN (
+        SELECT story_id, MAX(revision) AS max_revision FROM story_events GROUP BY story_id
+      ) e ON e.story_id=s.story_id WHERE s.revision != COALESCE(e.max_revision, 0)`);
   }
 
   run() {
@@ -24,7 +35,9 @@ export class IntegrityAuditService {
       { name: "foreign_keys", rows: this.foreignKeyCheck.all() },
       { name: "capture_item_counts", rows: this.captureLinkMismatches.all() },
       { name: "article_observation_counts", rows: this.articleCountMismatches.all() },
-      { name: "feed_watermarks", rows: this.feedWatermarkMismatches.all() }
+      { name: "feed_watermarks", rows: this.feedWatermarkMismatches.all() },
+      { name: "story_memberships", rows: this.storyMembershipMismatches.all() },
+      { name: "story_revisions", rows: this.storyRevisionMismatches.all() }
     ].map((check) => ({
       name: check.name,
       passed: check.rows.length === 0,

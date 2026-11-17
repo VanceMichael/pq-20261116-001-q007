@@ -13,6 +13,8 @@ import { ReviewService } from "./review-service.js";
 import { CsvExporter } from "../export/csv-exporter.js";
 import { ArticleTimelineService } from "./article-timeline.js";
 import { IntegrityAuditService } from "./integrity-audit.js";
+import { StoryRepository } from "../store/story-repository.js";
+import { StoryService } from "./story-service.js";
 
 export class NewsArchive {
   constructor(filename, options = {}) {
@@ -42,6 +44,8 @@ export class NewsArchive {
     this.reviewService = new ReviewService({ feeds: this.feeds, reviews: this.reviews, clock: this.clock });
     this.csvExporter = new CsvExporter({ database: this.database, feeds: this.feeds, articles: this.articles });
     this.timelines = new ArticleTimelineService({ feeds: this.feeds, reviews: this.reviews, articles: this.articles });
+    this.stories = new StoryRepository(this.database);
+    this.storyService = new StoryService({ stories: this.stories, clock: this.clock });
     this.integrityAudit = new IntegrityAuditService(this.database);
   }
 
@@ -110,6 +114,30 @@ export class NewsArchive {
 
   auditIntegrity() {
     return this.integrityAudit.run();
+  }
+
+  mergeStories(input) {
+    return this.storyService.merge(input);
+  }
+
+  addStoryMembers(storyId, input) {
+    return this.storyService.add(storyId, input);
+  }
+
+  unmergeStories(storyId, input) {
+    return this.storyService.unmerge(storyId, input);
+  }
+
+  storyDetail(storyId) {
+    return this.storyService.story(storyId);
+  }
+
+  storyEvents(storyId, limit) {
+    return this.storyService.events(storyId, limit);
+  }
+
+  storyOverview(options) {
+    return this.storyService.overview(options);
   }
 
   close() {

@@ -10,8 +10,38 @@ test("reports a fresh archive as consistent across SQLite and application invari
   assert.equal(report.status, "consistent");
   assert.ok(report.checks.every((check) => check.passed));
   assert.deepEqual(report.checks.map((check) => check.name), [
-    "sqlite_integrity", "foreign_keys", "capture_item_counts", "article_observation_counts", "feed_watermarks"
+    "sqlite_integrity", "foreign_keys", "capture_item_counts", "article_observation_counts",
+    "feed_watermarks", "story_memberships", "story_revisions"
   ]);
+});
+
+test("detects an undone merge that leaves an active story without members", async (t) => {
+  const { archive } = await makeArchive(t);
+  archive.registerFeed(baseFeed);
+  archive.importSnapshot("daily-main", page(standardItems(3)), captureTime(1));
+  const [first, second] = archive.listItems("daily-main").items;
+  const merged = archive.mergeStories({ articleIds: [first.articleId, second.articleId] });
+  // 直接破坏成员关系来模拟存储层不一致，审计必须能识别悬空活跃 story。
+  archive.database.prepare("UPDATE story_memberships SET left_at=? WHERE story_id=?")
+    .run("2026-11-17T00:00:00.000Z", merged.story.storyId);
+  const report = archive.auditIntegrity();
+  assert.equal(report.status, "inconsistent");
+  const check = report.checks.find((item) => item.name === "story_memberships");
+  assert.equal(check.passed, false);
+  assert.equal(check.examples[0].story_id, merged.story.storyId);
+});
+
+test("detects a story revision that no longer matches its append-only event stream", async (t) => {
+  const { archive } = await makeArchive(t);
+  archive.registerFeed(baseFeed);
+  archive.importSnapshot("daily-main", page(standardItems(3)), captureTime(1));
+  const [first, second] = archive.listItems("daily-main").items;
+  const merged = archive.mergeStories({ articleIds: [first.articleId, second.articleId] });
+  archive.database.prepare("UPDATE stories SET revision=99 WHERE story_id=?").run(merged.story.storyId);
+  const report = archive.auditIntegrity();
+  const check = report.checks.find((item) => item.name === "story_revisions");
+  assert.equal(check.passed, false);
+  assert.equal(check.examples[0].stored_revision, 99);
 });
 
 test("detects a missing capture link instead of trusting only SQLite page health", async (t) => {

@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { dirname, resolve } from "node:path";
 import { mkdirSync } from "node:fs";
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export function openDatabase(filename) {
   const path = resolve(filename);
@@ -17,8 +17,19 @@ export function migrate(database) {
   const version = database.prepare("PRAGMA user_version").get().user_version;
   if (version > SCHEMA_VERSION) throw new Error(`database schema ${version} is newer than supported ${SCHEMA_VERSION}`);
   if (version === SCHEMA_VERSION) return;
+  database.exec("BEGIN IMMEDIATE;");
+  try {
+    if (version === 0) migrateToV1(database);
+    if (version <= 1) migrateToV2(database);
+    database.exec(`PRAGMA user_version = ${SCHEMA_VERSION}; COMMIT;`);
+  } catch (error) {
+    database.exec("ROLLBACK;");
+    throw error;
+  }
+}
+
+function migrateToV1(database) {
   database.exec(`
-    BEGIN IMMEDIATE;
     CREATE TABLE IF NOT EXISTS feeds (
       feed_id TEXT PRIMARY KEY,
       base_url TEXT NOT NULL,
@@ -92,8 +103,45 @@ export function migrate(database) {
       changed_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS review_events_article_time ON review_events(article_id, event_id DESC);
-    PRAGMA user_version = 1;
-    COMMIT;
+  `);
+}
+
+function migrateToV2(database) {
+  // 人工归并层：文章（来源稿）保持独立，story 只负责把多篇来源稿显式归并为一篇稿件。
+  // 归并与撤销都只操作 membership / event 行，绝不改写 articles 与 capture_items 的历史观察。
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS stories (
+      story_id INTEGER PRIMARY KEY,
+      title TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'dissolved')),
+      revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      dissolved_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS story_memberships (
+      membership_id INTEGER PRIMARY KEY,
+      story_id INTEGER NOT NULL REFERENCES stories(story_id),
+      article_id INTEGER NOT NULL REFERENCES articles(article_id),
+      joined_at TEXT NOT NULL,
+      left_at TEXT,
+      join_event_id INTEGER NOT NULL REFERENCES story_events(event_id),
+      leave_event_id INTEGER REFERENCES story_events(event_id)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS story_memberships_active_article
+      ON story_memberships(article_id) WHERE left_at IS NULL;
+    CREATE INDEX IF NOT EXISTS story_memberships_active_story
+      ON story_memberships(story_id) WHERE left_at IS NULL;
+    CREATE TABLE IF NOT EXISTS story_events (
+      event_id INTEGER PRIMARY KEY,
+      story_id INTEGER NOT NULL REFERENCES stories(story_id),
+      article_id INTEGER REFERENCES articles(article_id),
+      kind TEXT NOT NULL CHECK(kind IN ('created', 'joined', 'left', 'dissolved')),
+      note TEXT,
+      revision INTEGER NOT NULL CHECK(revision >= 1),
+      changed_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS story_events_story_time ON story_events(story_id, event_id DESC);
   `);
 }
 

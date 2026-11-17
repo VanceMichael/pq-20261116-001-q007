@@ -46,6 +46,9 @@ async function routeRequest(request, response, archive) {
     const feed = archive.registerFeed(input);
     return writeJson(response, 201, { feed });
   }
+  if (segments[0] === "v1" && segments[1] === "stories") {
+    return routeStories(segments, request, response, archive, url);
+  }
   if (segments[0] !== "v1" || segments[1] !== "feeds" || !segments[2]) return notFound(response);
   const feedId = segments[2];
   validateFeedId(feedId);
@@ -154,6 +157,45 @@ function readBody(request) {
     request.once("error", reject);
     request.once("aborted", () => reject(Object.assign(new Error("request body was interrupted"), { statusCode: 400 })));
   });
+}
+
+async function routeStories(segments, request, response, archive, url) {
+  // POST /v1/stories：显式人工归并两个及以上来源稿。
+  if (segments.length === 2 && request.method === "POST") {
+    const result = archive.mergeStories(await readJson(request));
+    return writeJson(response, result.status, result);
+  }
+  // GET /v1/stories/overview：跨来源去重后的稿件总览（口径与来源级列表不同，响应内含对账说明）。
+  if (segments.length === 3 && segments[2] === "overview" && request.method === "GET") {
+    const visibility = url.searchParams.get("visibility");
+    if (visibility && !new Set(["visible", "quiet"]).has(visibility)) {
+      throw new TypeError("visibility must be visible or quiet");
+    }
+    const result = archive.storyOverview({
+      visibility,
+      limit: url.searchParams.get("limit"),
+      offset: url.searchParams.get("offset")
+    });
+    return writeJson(response, 200, result);
+  }
+  const storyId = Number(segments[2]);
+  if (segments.length === 3 && request.method === "GET") {
+    const result = archive.storyDetail(storyId);
+    return result ? writeJson(response, 200, result) : notFound(response);
+  }
+  if (segments.length === 4 && segments[3] === "members" && request.method === "POST") {
+    const result = archive.addStoryMembers(storyId, await readJson(request));
+    return writeJson(response, result.status, result);
+  }
+  if (segments.length === 4 && segments[3] === "unmerge" && request.method === "POST") {
+    const result = archive.unmergeStories(storyId, await readJson(request));
+    return writeJson(response, result.status, result);
+  }
+  if (segments.length === 4 && segments[3] === "events" && request.method === "GET") {
+    const result = archive.storyEvents(storyId, url.searchParams.get("limit"));
+    return result ? writeJson(response, 200, { events: result }) : notFound(response);
+  }
+  return notFound(response);
 }
 
 function notFound(response) {

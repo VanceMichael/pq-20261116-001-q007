@@ -1,3 +1,5 @@
+import { normalizeNote } from "./note-text.js";
+
 const REVIEW_STATES = new Set(["unreviewed", "confirmed", "withdrawn"]);
 
 export class ReviewService {
@@ -34,12 +36,4 @@ export class ReviewService {
     const article = this.reviews.article(feedId, articleId);
     return article ? { article, events: this.reviews.events(articleId, limit) } : null;
   }
-}
-
-function normalizeNote(note) {
-  if (note === undefined || note === null || note === "") return null;
-  if (typeof note !== "string") throw new TypeError("note must be text");
-  const normalized = note.normalize("NFC").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
-  if (!normalized || normalized.length > 1000) throw new RangeError("note must contain 1 to 1000 characters");
-  return normalized;
 }
